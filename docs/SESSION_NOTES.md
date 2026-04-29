@@ -19,7 +19,7 @@ The renderer is a **Python pip package** installed into a venv. Our changes are:
 ## Working Directory Layout (on user's machine)
 
 ```
-D:\MMR\
+<your_working_dir>\
 ├── venv\                          # Python 3.10 venv
 │   └── Lib\site-packages\
 │       ├── replay_unpack\         # packet parser (patched)
