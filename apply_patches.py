@@ -88,12 +88,8 @@ def main():
     patch_file(
         ship_py,
         old=(
-            '                    try:\n'
-            '                        index = abilities["id_to_index"][aid]\n'
-            '                    except KeyError:\n'
-            '                        index = self._abilities["clan"][aid]'
-        ),
-        new=(
+            '                for aid, _ in ac.items():\n'
+            '                    abilities = self._abilities.get(params_id)\n'
             '                    try:\n'
             '                        index = abilities["id_to_index"][aid]\n'
             '                    except KeyError:\n'
@@ -102,7 +98,19 @@ def main():
             '                        except KeyError:\n'
             '                            continue'
         ),
-        description="Skip unknown consumable slot IDs gracefully"
+        new=(
+            '                for aid, _ in ac.items():\n'
+            '                    abilities = self._abilities.get(params_id)\n'
+            '                    if abilities is None: continue\n'
+            '                    try:\n'
+            '                        index = abilities["id_to_index"][aid]\n'
+            '                    except KeyError:\n'
+            '                        try:\n'
+            '                            index = self._abilities["clan"][aid]\n'
+            '                        except KeyError:\n'
+            '                            continue'
+        ),
+        description="Skip consumable rendering for unknown ships"
     )
     print()
 
@@ -166,7 +174,7 @@ def main():
     # -------------------------------------------------------------------------
     # Patch 5: battle_controller.py - fix consumableUsageParams signature
     # -------------------------------------------------------------------------
-    print("Patching battle_controller.py...")
+    print("Patching battle_controller.py (consumable signature)...")
     controllers = glob.glob(os.path.join(replay_unpack, 'clients', 'wows', 'versions', '*', 'battle_controller.py'))
     for bc_path in controllers:
         patch_file(
@@ -178,7 +186,20 @@ def main():
     print()
 
     # -------------------------------------------------------------------------
-    # Patch 6: renderer/render.py - remove watermark
+    # Patch 6: battle_controller.py - fix ribbon tracking ID
+    # -------------------------------------------------------------------------
+    print("Patching battle_controller.py (ribbon tracking)...")
+    for bc_path in controllers:
+        patch_file(
+            bc_path,
+            old='self._ribbons.setdefault(avatar.id,',
+            new='self._ribbons.setdefault(self._owner.get("shipId", avatar.id),',
+            description="Fix ribbon tracking to use shipId instead of avatar.id"
+        )
+    print()
+
+    # -------------------------------------------------------------------------
+    # Patch 7: renderer/render.py - remove watermark
     # -------------------------------------------------------------------------
     print("Patching renderer/render.py...")
     render_py = os.path.join(renderer, 'render.py')
@@ -195,7 +216,7 @@ def main():
         )
         with open(render_py, 'w', encoding='utf-8') as f:
             f.write(content)
-        print("  OK: Remove watermark from renders")
+        print("  OK: Watermark removal")
     else:
         print("  ALREADY APPLIED: Watermark removal")
     print()
