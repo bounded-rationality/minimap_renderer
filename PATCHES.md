@@ -30,55 +30,28 @@ for i in range(blocks_count - 1):
 
 ---
 
-## replay_unpack/clients/wows/player.py
+## replay_unpack/clients/wows/versions/15_X_0/battle_controller.py
 
-### Patch: Add debug logging to EntityMethod processing
+### Patch 1: Fix _on_consumable_used signature
 
-**Why:** Added error logging to help diagnose packet parsing failures during development. Also adds the error without re-raising in strict mode for better diagnostics.
-
-**Change:** Wrapped `entity.call_client_method` in try/except with logging.
-
----
-
-## replay_unpack/clients/wows/versions/15_2_0/battle_controller.py
-
-This file is copied from `14_11_0` with the following changes:
-
-### Patch 1: Remove debug exit() call
-
-**Why:** The original 14_11_0 `battle_controller.py` contained a debug line `if entity.id == 959830: exit()` in `_set_health`. This was a developer debug artifact that would crash the renderer if that specific entity ID appeared in a replay.
-
-**Change:** Removed the two lines.
-
-### Patch 2: Update `_on_consumable_used` signature
-
-**Why:** In WoWs 15.2, the `onConsumableUsed` method on the `Vehicle` entity changed its signature. The `consumableType` integer argument was replaced by a `consumableUsageParams` binary blob. The consumable slot ID is now in byte 1 of this blob.
+**Why:** In WoWs 15.2+, the `onConsumableUsed` method changed its signature to include `consumableUsageParams`. The original signature does not accept this keyword argument, causing a `TypeError` on every consumable use event.
 
 **Change:**
-```python
-# BEFORE (14_11_0 signature):
-def _on_consumable_used(self, entity: Entity, consumableType, workTimeLeft):
-    consumables = self._acc_consumables.setdefault(entity.id, [])
-    consumables.append(
-        Consumable(ship_id=entity.id, consumable_id=consumableType, duration=workTimeLeft)
-    )
 
-# AFTER (15_2_0 signature):
-def _on_consumable_used(self, entity: Entity, consumableUsageParams, workTimeLeft):
-    consumables = self._acc_consumables.setdefault(entity.id, [])
-    consumable_id = consumableUsageParams[1] if isinstance(consumableUsageParams, (bytes, bytearray)) and len(consumableUsageParams) >= 2 else 0
-    consumables.append(
-        Consumable(ship_id=entity.id, consumable_id=consumable_id, duration=workTimeLeft)
-    )
+```python
+# BEFORE:
+def _on_consumable_used(self, entity: Entity, consumableType, workTimeLeft):
+
+# AFTER:
+def _on_consumable_used(self, entity: Entity, consumableType=None, workTimeLeft=None, consumableUsageParams=None, **kwargs):
 ```
 
-**Note:** The `consumableUsageParams` blob format is `[0x01, slot_id]` where `slot_id` matches the integer keys in `abilities.json`'s `id_to_index` mapping. Slot IDs 0-13 existed in 14.11; slots 4, 6, 8 were added later and are not yet in `abilities.json`.
+### Patch 2: Fix ribbon tracking ID
 
-### Patch 3: Fix ribbon tracking ID
-
-**Why:** Ribbons were being stored under `avatar.id` (the Avatar entity ID) but the renderer's `LayerRibbon` looks them up by `owner_vehicle_id` (the ship's entity ID). In 15.x these IDs differ by 1.
+**Why:** Ribbons were being stored under `avatar.id` (the Avatar entity ID) but the renderer's `LayerRibbon` looks them up by `owner_vehicle_id` (the ship's entity ID). In 15.x these IDs differ, causing ribbons to never display.
 
 **Change:**
+
 ```python
 # BEFORE:
 def update_ribbons(state):
@@ -86,25 +59,49 @@ def update_ribbons(state):
 
 # AFTER:
 def update_ribbons(state):
-    vid = self._owner.get("shipId", avatar.id)
-    self._ribbons.setdefault(vid, {})[state["ribbonId"]] = state["count"]
+    self._ribbons.setdefault(self._owner.get("shipId", avatar.id), {})[state["ribbonId"]] = state["count"]
 ```
 
 ---
 
 ## renderer/layers/ship.py
 
-### Patch 1: Graceful abilities fallback
+### Patch 1: Graceful abilities lookup
 
-**Why:** Ships added after 14.11 (new releases, event ships, etc.) are not present in the bundled `abilities.json`. The original code crashed with `KeyError` when encountering these ships.
+**Why:** Ships added after 14.11 are not present in the bundled `abilities.json`. The original code crashed with `KeyError` when encountering these ships.
 
-**Change:** Changed `self._abilities[params_id]` to `self._abilities.get(params_id)` and added `if abilities is None: continue` to skip the consumable display for unknown ships.
+**Change:** `self._abilities[params_id]` → `self._abilities.get(params_id)`
 
-### Patch 2: Graceful consumable slot fallback
+### Patch 2: Guard consumable rendering for unknown ships
+
+**Why:** When `abilities` is `None` (unknown ship), the code must skip consumable rendering entirely. The guard must be placed **before** the `try` block, not inside it, to avoid a `SyntaxError`.
+
+**Change:**
+
+```python
+# BEFORE:
+for aid, _ in ac.items():
+    abilities = self._abilities.get(params_id)
+    try:
+        index = abilities["id_to_index"][aid]
+    except KeyError:
+        ...
+
+# AFTER:
+for aid, _ in ac.items():
+    abilities = self._abilities.get(params_id)
+    if abilities is None: continue
+    try:
+        index = abilities["id_to_index"][aid]
+    except KeyError:
+        ...
+```
+
+### Patch 3: Graceful consumable slot fallback
 
 **Why:** New consumable slot IDs (4, 6, 8) introduced after 14.11 are not in `abilities.json`. The original code crashed when encountering them.
 
-**Change:** Added a nested try/except to skip unknown slot IDs rather than crashing.
+**Change:** Added a nested `try/except` to fall back to the clan abilities lookup, then skip if still not found.
 
 ---
 
@@ -114,7 +111,7 @@ def update_ribbons(state):
 
 **Why:** Same as ship.py — ships not in `abilities.json` crashed health bar rendering.
 
-**Change:** `ability = self._abilities.get(...)` and guard `if ability is None: return` placed just before the burn/flood node section (which requires ability data), NOT before the health bar drawing (which does not).
+**Change:** `ability = self._abilities[...]` → `ability = self._abilities.get(...)` and guard `if ability is None: return` placed just before the burn/flood node section (which requires ability data), NOT before the health bar drawing (which does not).
 
 ---
 
@@ -124,13 +121,13 @@ def update_ribbons(state):
 
 **Why:** Same as ship.py — ships not in `abilities.json` crashed marker rendering.
 
-**Change:** `abilities = self._abilities.get(...)` and `if abilities is None: continue`.
+**Change:** `abilities = self._abilities[...]` → `abilities = self._abilities.get(...)` and `if abilities is None: continue`.
 
 ### Patch 2: Graceful slot ID fallback in sonar/radar circle drawing
 
-**Why:** The markers layer draws sonar/radar circles for consumable slot IDs 11 (Hydrophone) and 13 (Radar). If a ship has these consumables active but they are not present in that ship's `abilities.json` entry (e.g. a ship added after 14.11), the code crashed with `KeyError` on `id_to_index[aid]`.
+**Why:** The markers layer draws sonar/radar circles for consumable slot IDs 11 (Hydrophone) and 13 (Radar). If a ship has these consumables active but they are not in `abilities.json`, the code crashed with `KeyError`.
 
-**Change:** Added a guard before the `name` lookup to skip unknown slot IDs:
+**Change:**
 
 ```python
 # BEFORE:
@@ -150,7 +147,7 @@ for aid in {11, 13}.intersection(ac):
 
 ### Patch: Remove watermark
 
-**Why:** This is a local proof-of-concept fork. The watermark referenced the original project's GitHub URL which is misleading given the code has been significantly modified.
+**Why:** This is a community fork. The watermark referenced the original project's GitHub URL which is misleading given the significant modifications made.
 
 **Change:** `_draw_header` method body replaced with `pass`.
 
@@ -162,7 +159,7 @@ Each `replay_unpack/clients/wows/versions/15_X_0/` folder contains:
 
 | File | Source | Notes |
 |------|--------|-------|
-| `__init__.py` | Copied from previous version | Imports `BattleController` |
+| `__init__.py` | Copied from previous version | Imports BattleController |
 | `battle_controller.py` | Copied from previous version | Update if method signatures changed |
 | `constants.py` | Copied from previous version | Rarely changes |
 | `players_info.py` | Copied from previous version | Rarely changes |
@@ -179,12 +176,14 @@ The `scripts/` folder must be extracted fresh from the game installation using `
 
 ### abilities.json not updated
 
-The `abilities.json` file in `renderer/resources/` was generated by the original project's `create_data.py` script, which processed GameParams in a complex way to build per-ship consumable loadout data. This script is not yet updated to work with the 15.x GameParams format.
+The `abilities.json` file in `renderer/resources/` was generated by the original project's `create_data.py` script, which is not yet updated to work with the 15.x GameParams format.
 
-**Impact:** Consumable icons for ships using slot IDs 4, 6, or 8 will not display. The render will not crash (due to our graceful fallback), but the consumable indicator will be missing for those ships.
+**Impact:** Consumable icons for ships using slot IDs 4, 6, or 8 will not display. The render will not crash (due to graceful fallback), but the consumable indicator will be missing for those ships.
 
-**Future fix:** Reverse-engineer `create_data.py` to work with the new GameParams format and the region-keyed structure introduced in 15.3.
+**Future fix:** Update `create_data.py` to work with the new GameParams format and the region-keyed structure introduced in 15.3.
 
 ### ship_bars images not updated
 
-The health bar silhouette images in `renderer/resources/ship_bars/` are static assets bundled with the original project. Ships added after 14.11 will not have a silhouette image, causing health bars to display without the ship outline.
+The health bar silhouette images in `renderer/resources/ship_bars/` are static assets. Ships added after 14.11 will not have a silhouette image, causing health bars to display without the ship outline.
+
+**Fix:** Run `extract.py` after each game update and copy new images from `res_extract/gui/ship_bars/` into `renderer/resources/ship_bars/`.
