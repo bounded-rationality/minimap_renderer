@@ -10,6 +10,7 @@ Run this once after installing the renderer:
 import os
 import sys
 import site
+import glob
 
 def find_package(name):
     for path in site.getsitepackages():
@@ -163,7 +164,21 @@ def main():
     print()
 
     # -------------------------------------------------------------------------
-    # Patch 5: renderer/render.py - remove watermark
+    # Patch 5: battle_controller.py - fix consumableUsageParams signature
+    # -------------------------------------------------------------------------
+    print("Patching battle_controller.py...")
+    controllers = glob.glob(os.path.join(replay_unpack, 'clients', 'wows', 'versions', '*', 'battle_controller.py'))
+    for bc_path in controllers:
+        patch_file(
+            bc_path,
+            old='def _on_consumable_used(self, entity: Entity, consumableType, workTimeLeft):',
+            new='def _on_consumable_used(self, entity: Entity, consumableType=None, workTimeLeft=None, consumableUsageParams=None, **kwargs):',
+            description="Fix consumableUsageParams signature"
+        )
+    print()
+
+    # -------------------------------------------------------------------------
+    # Patch 6: renderer/render.py - remove watermark
     # -------------------------------------------------------------------------
     print("Patching renderer/render.py...")
     render_py = os.path.join(renderer, 'render.py')
